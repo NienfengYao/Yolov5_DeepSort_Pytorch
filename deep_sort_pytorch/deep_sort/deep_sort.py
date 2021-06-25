@@ -5,6 +5,7 @@ from .deep.feature_extractor import Extractor
 from .sort.nn_matching import NearestNeighborDistanceMetric
 from .sort.detection import Detection
 from .sort.tracker import Tracker
+from yolov5.utils.torch_utils import time_synchronized
 
 
 __all__ = ['DeepSort']
@@ -22,11 +23,15 @@ class DeepSort(object):
             "cosine", max_cosine_distance, nn_budget)
         self.tracker = Tracker(
             metric, max_iou_distance=max_iou_distance, max_age=max_age, n_init=n_init)
+        self.total_time_reid = 0
 
     def update(self, bbox_xywh, confidences, ori_img):
         self.height, self.width = ori_img.shape[:2]
         # generate detections
+        t0 = time_synchronized()
         features = self._get_features(bbox_xywh, ori_img)
+        t1 = time_synchronized()
+        self.total_time_reid += (t1-t0)
         bbox_tlwh = self._xywh_to_tlwh(bbox_xywh)
         detections = [Detection(bbox_tlwh[i], conf, features[i]) for i, conf in enumerate(
             confidences) if conf > self.min_confidence]

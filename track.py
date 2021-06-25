@@ -139,7 +139,13 @@ def detect(opt):
     txt_file_name = source.split('/')[-1].split('.')[0]
     txt_path = str(Path(out)) + '/' + txt_file_name + '.txt'
 
+    total_frames = 0
+    total_time_infer = 0
+    total_time_nms = 0
+    total_time_track = 0
     for frame_idx, (path, img, im0s, vid_cap) in enumerate(dataset):
+        total_frames += 1
+        t_start = time_synchronized()
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
@@ -149,11 +155,12 @@ def detect(opt):
         # Inference
         t1 = time_synchronized()
         pred = model(img, augment=opt.augment)[0]
+        t_infer = time_synchronized()
 
         # Apply NMS
         pred = non_max_suppression(
             pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
-        t2 = time_synchronized()
+        t_nms = t2 = time_synchronized()
 
         # Process detections
         for i, det in enumerate(pred):  # detections per image
@@ -217,6 +224,13 @@ def detect(opt):
 
             # Print time (inference + NMS)
             print('%sDone. (%.3fs)' % (s, t2 - t1))
+            t_track = time_synchronized()
+            cycle_time_infer = t_infer-t_start
+            cycle_time_nms = t_nms-t_infer
+            cycle_time_track = t_track-t_nms
+            total_time_infer += cycle_time_infer
+            total_time_nms += cycle_time_nms
+            total_time_track += cycle_time_track
 
             # Stream results
             if show_vid:
@@ -246,8 +260,13 @@ def detect(opt):
         if platform == 'darwin':  # MacOS
             os.system('open ' + save_path)
 
-    print('Done. (%.3fs)' % (time.time() - t0))
-
+    total_time = time.time() - t0
+    print('Done. (%.3fs, %.1f FPS)' % (total_time, total_frames / total_time))
+    print('\tInferring. (%.3fs, %.1f FPS)' % (total_time_infer+total_time_nms, total_frames / (total_time_infer+total_time_nms)))
+    print('\t\tInfer. (%.3fs, %.1f FPS)' % (total_time_infer, total_frames / total_time_infer))
+    print('\t\tNMS. (%.3fs, %.1f FPS)' % (total_time_nms, total_frames / total_time_nms))
+    print('\tTracking. (%.3fs, %.1f FPS)' % (total_time_track, total_frames / total_time_track))
+    print('\t\tReID. (%.3fs, %.1f FPS)' % (deepsort.total_time_reid, total_frames / deepsort.total_time_reid))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
