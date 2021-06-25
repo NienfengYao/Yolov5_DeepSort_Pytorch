@@ -119,3 +119,9 @@ If you find this project useful in your research, please consider cite:
 
 For more detailed information about the algorithms and their corresponding lisences used in this project access their official github implementations.
 
+## Branch: performance_test
+`git clone --recurse-submodules https://github.com/NienfengYao/Yolov5_DeepSort_Pytorch.git`
+
+`git checkout performance_test`
+
+`python track.py --source test.mp4`
