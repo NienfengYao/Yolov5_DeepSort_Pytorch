@@ -2,7 +2,7 @@ import cv2, torch
 
 
 def check_cv2():
-	print("Check CV2:")
+	print("Check CV2:", cv2.__version__)
 	count = cv2.cuda.getCudaEnabledDeviceCount()
 	if count > 0:
 		print('\tusing cuda')
@@ -11,7 +11,7 @@ def check_cv2():
 
 
 def check_torch():
-	print("Check Torch:")
+	print("Check Torch:", torch.__version__)
 	device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 	print('\tUsing device:', device)
 	#Additional Info when using cuda
