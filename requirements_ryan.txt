@@ -1,0 +1,25 @@
+# python==3.6.1
+python==3.6
+# requests==2.25.1
+requests
+# CUDA 10.2
+# conda install pytorch==1.7.1 torchvision==0.8.2 torchaudio==0.7.2 cudatoolkit=10.2 -c pytorch
+# CUDA 11.0
+# conda install pytorch==1.7.1 torchvision==0.8.2 torchaudio==0.7.2 cudatoolkit=11.0 -c pytorch
+pytorch==1.7.1
+# pandas-1.1.5
+panda
+# tqdm==4.59.0
+tqdm
+# pyyaml-5.4.1
+pyyaml
+# matplotlib-3.3.4
+matplotlib
+# seaborn-0.11.1
+seaborn
+
+
+# pip install opencv-python (4.5.2.54)
+opencv-python
+# easydict-1.9
+easydict
