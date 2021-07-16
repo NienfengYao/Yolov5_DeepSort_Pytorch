@@ -171,6 +171,10 @@ def deep_sort_track(deepsort, pred, pred_rec, path, im0s, vid_cap, webcam, out, 
                         with open(txt_path, 'a') as f:
                             f.write(('%g ' * 10 + '\n') % (frame_idx, identity, bbox_top,
                                                         bbox_left, bbox_w, bbox_h, -1, -1, -1, -1))  # label format
+                print(tlwh_bboxs)
+                print(outputs)
+                if frame_idx >= 2:
+                    exit(1)
 
         else:
             deepsort.increment_ages()
@@ -220,24 +224,34 @@ def yolov5_init(device, yolo_weights, imgsz):
     # Run inference
     if device.type != 'cpu':
         model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+    # return model, half, names
     return model, half, names, imgsz, stride
 
 
-def yolov5_pred(model, img, half, device, opt):
+# def yolov5_pred(model, img, half, device, opt):
+def yolov5_pred(model, img, half, device, opt, frame_idx):
+    import numpy as np
+    np.save('imgA_%s' % frame_idx, img)
     img = torch.from_numpy(img).to(device)
+    np.save('imgB_%s' % frame_idx, img.cpu().data.numpy())
     img = img.half() if half else img.float()  # uint8 to fp16/32
+    np.save('imgC_%s' % frame_idx, img.cpu().data.numpy())
     img /= 255.0  # 0 - 255 to 0.0 - 1.0
     if img.ndimension() == 3:
         img = img.unsqueeze(0)
 
+    np.save('imgD_%s' % frame_idx, img.cpu().data.numpy())
     # Inference
     t1 = time_synchronized()
+    print('opt.augment:', opt.augment)
     pred = model(img, augment=opt.augment)[0]
+    np.save('imgE_%s' % frame_idx, pred.cpu().data.numpy())
 
     # Apply NMS
     pred = non_max_suppression(
         pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
     t2 = time_synchronized()
+    np.save('imgF_%s' % frame_idx, pred)
     return pred, t1, t2, img
 
 
@@ -249,7 +263,10 @@ def detect(opt):
         'rtsp') or source.startswith('http') or source.endswith('.txt')
 
     deepsort, device = deep_sort_init(opt)
+    # print('device, yolo_weights, imgsz:', device, yolo_weights, imgsz)
+    # model, half, names = yolov5_init(device, yolo_weights, imgsz)
     model, half, names, imgsz, stride  = yolov5_init(device, yolo_weights, imgsz)
+    # exit(1)
 
     # Set Dataloader
     vid_path, vid_writer = None, None
@@ -270,7 +287,11 @@ def detect(opt):
     txt_path = str(Path(out)) + '/' + txt_file_name + '.txt'
 
     for frame_idx, (path, img, im0s, vid_cap) in enumerate(dataset):
-        pred, t1, t2, img = yolov5_pred(model, img, half, device, opt)
+        print('\nimg:', img.dtype, img.sum())
+        print('im0s:', im0s.dtype, im0s.sum())
+        # pred, t1, t2, img = yolov5_pred(model, img, half, device, opt)
+        pred, t1, t2, img = yolov5_pred(model, img, half, device, opt, frame_idx)
+        print('pred:', pred)
         pred_rec = yolov5_pred_realsize(pred, img, im0s)
         deep_sort_track(deepsort, pred, pred_rec, path, im0s, vid_cap, webcam, out, show_vid, save_vid, names, t1, t2, vid_path, vid_writer, save_txt, txt_path, frame_idx)
 
