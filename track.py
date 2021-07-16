@@ -115,7 +115,7 @@ def yolov5_pred_realsize(pred, img, im0):
     return pred_rec
 
 
-def deep_sort_track_part2(deepsort, pred, pred_rec, path, im0s, vid_cap, webcam, out, show_vid, save_vid, names, t1, t2, vid_path, vid_writer, save_txt, txt_path, frame_idx):
+def deep_sort_track(deepsort, pred, pred_rec, path, im0s, vid_cap, webcam, out, show_vid, save_vid, names, t1, t2, vid_path, vid_writer, save_txt, txt_path, frame_idx):
     # Process detections
     for i, det in enumerate(pred):  # detections per image
         if webcam:  # batch_size >= 1
@@ -272,7 +272,7 @@ def detect(opt):
     for frame_idx, (path, img, im0s, vid_cap) in enumerate(dataset):
         pred, t1, t2, img = yolov5_pred(model, img, half, device, opt)
         pred_rec = yolov5_pred_realsize(pred, img, im0s)
-        deep_sort_track_part2(deepsort, pred, pred_rec, path, im0s, vid_cap, webcam, out, show_vid, save_vid, names, t1, t2, vid_path, vid_writer, save_txt, txt_path, frame_idx)
+        deep_sort_track(deepsort, pred, pred_rec, path, im0s, vid_cap, webcam, out, show_vid, save_vid, names, t1, t2, vid_path, vid_writer, save_txt, txt_path, frame_idx)
 
     if save_txt or save_vid:
         print('Results saved to %s' % os.getcwd() + os.sep + out)
