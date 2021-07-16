@@ -220,7 +220,7 @@ def yolov5_init(device, yolo_weights, imgsz):
     # Run inference
     if device.type != 'cpu':
         model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
-    return model, half, names
+    return model, half, names, imgsz, stride
 
 
 def yolov5_pred(model, img, half, device, opt):
@@ -249,7 +249,7 @@ def detect(opt):
         'rtsp') or source.startswith('http') or source.endswith('.txt')
 
     deepsort, device = deep_sort_init(opt)
-    model, half, names = yolov5_init(device, yolo_weights, imgsz)
+    model, half, names, imgsz, stride  = yolov5_init(device, yolo_weights, imgsz)
 
     # Set Dataloader
     vid_path, vid_writer = None, None
