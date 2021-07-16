@@ -20,7 +20,6 @@ import torch
 import torch.backends.cudnn as cudnn
 
 
-
 palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
 
 
@@ -35,6 +34,7 @@ def xyxy_to_xywh(*xyxy):
     w = bbox_w
     h = bbox_h
     return x_c, y_c, w, h
+
 
 def xyxy_to_tlwh(bbox_xyxy):
     tlwh_bboxs = []
@@ -77,17 +77,11 @@ def draw_boxes(img, bbox, identities=None, offset=(0, 0)):
     return img
 
 
-def detect(opt):
-    out, source, yolo_weights, deep_sort_weights, show_vid, save_vid, save_txt, imgsz, evaluate = \
-        opt.output, opt.source, opt.yolo_weights, opt.deep_sort_weights, opt.show_vid, opt.save_vid, \
-            opt.save_txt, opt.img_size, opt.evaluate
-    webcam = source == '0' or source.startswith(
-        'rtsp') or source.startswith('http') or source.endswith('.txt')
-
+def deep_sort_init(opt):
     # initialize deepsort
     cfg = get_config()
     cfg.merge_from_file(opt.config_deepsort)
-    attempt_download(deep_sort_weights, repo='mikel-brostrom/Yolov5_DeepSort_Pytorch')
+    attempt_download(opt.deep_sort_weights, repo='mikel-brostrom/Yolov5_DeepSort_Pytorch')
     deepsort = DeepSort(cfg.DEEPSORT.REID_CKPT,
                         max_dist=cfg.DEEPSORT.MAX_DIST, min_confidence=cfg.DEEPSORT.MIN_CONFIDENCE,
                         nms_max_overlap=cfg.DEEPSORT.NMS_MAX_OVERLAP, max_iou_distance=cfg.DEEPSORT.MAX_IOU_DISTANCE,
@@ -99,11 +93,118 @@ def detect(opt):
 
     # The MOT16 evaluation runs multiple inference streams in parallel, each one writing to
     # its own .txt file. Hence, in that case, the output folder is not restored
-    if not evaluate:
-        if os.path.exists(out):
+    if not opt.evaluate:
+        if os.path.exists(opt.output):
             pass
-            shutil.rmtree(out)  # delete output folder
-        os.makedirs(out)  # make new output folder
+            shutil.rmtree(opt.output)  # delete output folder
+        os.makedirs(opt.output)  # make new output folder
+
+    return deepsort, device
+
+
+def yolov5_pred_realsize(pred, img, im0):
+    pred_rec = []
+    for i, det in enumerate(pred):  # detections per image
+        det_rec = None
+        if det is not None and len(det):
+            # Rescale boxes from img_size to im0 size
+            det[:, :4] = scale_coords(
+                img.shape[2:], det[:, :4], im0.shape).round()
+            det_rec = det
+        pred_rec.append(det_rec)
+    return pred_rec
+
+
+def deep_sort_track_part2(deepsort, pred, pred_rec, path, im0s, vid_cap, webcam, out, show_vid, save_vid, names, t1, t2, vid_path, vid_writer, save_txt, txt_path, frame_idx):
+    # Process detections
+    for i, det in enumerate(pred):  # detections per image
+        if webcam:  # batch_size >= 1
+            p, s, im0 = path[i], '%g: ' % i, im0s[i].copy()
+        else:
+            p, s, im0 = path, '', im0s
+
+        s += '%gx%g ' % im0.shape[:2]  # print string
+        save_path = str(Path(out) / Path(p).name)
+
+        if det is not None and len(det):
+            # Rescale boxes from img_size to im0 size
+            det = pred_rec[i]
+
+            # Print results
+            for c in det[:, -1].unique():
+                n = (det[:, -1] == c).sum()  # detections per class
+                s += '%g %ss, ' % (n, names[int(c)])  # add to string
+
+            xywh_bboxs = []
+            confs = []
+
+            # Adapt detections to deep sort input format
+            for *xyxy, conf, cls in det:
+                # to deep sort format
+                x_c, y_c, bbox_w, bbox_h = xyxy_to_xywh(*xyxy)
+                xywh_obj = [x_c, y_c, bbox_w, bbox_h]
+                xywh_bboxs.append(xywh_obj)
+                confs.append([conf.item()])
+
+            xywhs = torch.Tensor(xywh_bboxs)
+            confss = torch.Tensor(confs)
+
+            # pass detections to deepsort
+            outputs = deepsort.update(xywhs, confss, im0)
+
+            # draw boxes for visualization
+            if len(outputs) > 0:
+                bbox_xyxy = outputs[:, :4]
+                identities = outputs[:, -1]
+                draw_boxes(im0, bbox_xyxy, identities)
+                # to MOT format
+                tlwh_bboxs = xyxy_to_tlwh(bbox_xyxy)
+
+                # Write MOT compliant results to file
+                if save_txt:
+                    for j, (tlwh_bbox, output) in enumerate(zip(tlwh_bboxs, outputs)):
+                        bbox_top = tlwh_bbox[0]
+                        bbox_left = tlwh_bbox[1]
+                        bbox_w = tlwh_bbox[2]
+                        bbox_h = tlwh_bbox[3]
+                        identity = output[-1]
+                        with open(txt_path, 'a') as f:
+                            f.write(('%g ' * 10 + '\n') % (frame_idx, identity, bbox_top,
+                                                        bbox_left, bbox_w, bbox_h, -1, -1, -1, -1))  # label format
+
+        else:
+            deepsort.increment_ages()
+
+        # Print time (inference + NMS)
+        print('%sDone. (%.3fs)' % (s, t2 - t1))
+        # Stream results
+        if show_vid:
+            cv2.imshow(p, im0)
+            if cv2.waitKey(1) == ord('q'):  # q to quit
+                raise StopIteration
+
+        # Save results (image with detections)
+        if save_vid:
+            if vid_path != save_path:  # new video
+                print('vid_path != save_path', vid_path, save_path)
+                vid_path = save_path
+                if isinstance(vid_writer, cv2.VideoWriter):
+                    vid_writer.release()  # release previous video writer
+                if vid_cap:  # video
+                    fps = vid_cap.get(cv2.CAP_PROP_FPS)
+                    w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                else:  # stream
+                    fps, w, h = 30, im0.shape[1], im0.shape[0]
+                    save_path += '.mp4'
+
+                vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+                print(vid_writer)
+            vid_writer.write(im0)
+    return vid_path, vid_writer
+
+
+def yolov5_init(device, yolo_weights, imgsz):
     half = device.type != 'cpu'  # half precision only supported on CUDA
 
     # Load model
@@ -113,6 +214,42 @@ def detect(opt):
     names = model.module.names if hasattr(model, 'module') else model.names  # get class names
     if half:
         model.half()  # to FP16
+    # Get names and colors
+    names = model.module.names if hasattr(model, 'module') else model.names
+
+    # Run inference
+    if device.type != 'cpu':
+        model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+    return model, half, names
+
+
+def yolov5_pred(model, img, half, device, opt):
+    img = torch.from_numpy(img).to(device)
+    img = img.half() if half else img.float()  # uint8 to fp16/32
+    img /= 255.0  # 0 - 255 to 0.0 - 1.0
+    if img.ndimension() == 3:
+        img = img.unsqueeze(0)
+
+    # Inference
+    t1 = time_synchronized()
+    pred = model(img, augment=opt.augment)[0]
+
+    # Apply NMS
+    pred = non_max_suppression(
+        pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
+    t2 = time_synchronized()
+    return pred, t1, t2, img
+
+
+def detect(opt):
+    out, source, yolo_weights, deep_sort_weights, show_vid, save_vid, save_txt, imgsz, evaluate = \
+        opt.output, opt.source, opt.yolo_weights, opt.deep_sort_weights, opt.show_vid, opt.save_vid, \
+            opt.save_txt, opt.img_size, opt.evaluate
+    webcam = source == '0' or source.startswith(
+        'rtsp') or source.startswith('http') or source.endswith('.txt')
+
+    deepsort, device = deep_sort_init(opt)
+    model, half, names = yolov5_init(device, yolo_weights, imgsz)
 
     # Set Dataloader
     vid_path, vid_writer = None, None
@@ -126,147 +263,22 @@ def detect(opt):
     else:
         dataset = LoadImages(source, img_size=imgsz)
 
-    # Get names and colors
-    names = model.module.names if hasattr(model, 'module') else model.names
-
-    # Run inference
-    if device.type != 'cpu':
-        model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
     t0 = time.time()
-
     save_path = str(Path(out))
     # extract what is in between the last '/' and last '.'
     txt_file_name = source.split('/')[-1].split('.')[0]
     txt_path = str(Path(out)) + '/' + txt_file_name + '.txt'
 
-    total_frames = 0
-    total_time_infer = 0
-    total_time_nms = 0
-    total_time_track = 0
     for frame_idx, (path, img, im0s, vid_cap) in enumerate(dataset):
-        total_frames += 1
-        t_start = time_synchronized()
-        img = torch.from_numpy(img).to(device)
-        img = img.half() if half else img.float()  # uint8 to fp16/32
-        img /= 255.0  # 0 - 255 to 0.0 - 1.0
-        if img.ndimension() == 3:
-            img = img.unsqueeze(0)
-
-        # Inference
-        t1 = time_synchronized()
-        pred = model(img, augment=opt.augment)[0]
-        t_infer = time_synchronized()
-
-        # Apply NMS
-        pred = non_max_suppression(
-            pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
-        t_nms = t2 = time_synchronized()
-
-        # Process detections
-        for i, det in enumerate(pred):  # detections per image
-            if webcam:  # batch_size >= 1
-                p, s, im0 = path[i], '%g: ' % i, im0s[i].copy()
-            else:
-                p, s, im0 = path, '', im0s
-
-            s += '%gx%g ' % img.shape[2:]  # print string
-            save_path = str(Path(out) / Path(p).name)
-
-            if det is not None and len(det):
-                # Rescale boxes from img_size to im0 size
-                det[:, :4] = scale_coords(
-                    img.shape[2:], det[:, :4], im0.shape).round()
-
-                # Print results
-                for c in det[:, -1].unique():
-                    n = (det[:, -1] == c).sum()  # detections per class
-                    s += '%g %ss, ' % (n, names[int(c)])  # add to string
-
-                xywh_bboxs = []
-                confs = []
-
-                # Adapt detections to deep sort input format
-                for *xyxy, conf, cls in det:
-                    # to deep sort format
-                    x_c, y_c, bbox_w, bbox_h = xyxy_to_xywh(*xyxy)
-                    xywh_obj = [x_c, y_c, bbox_w, bbox_h]
-                    xywh_bboxs.append(xywh_obj)
-                    confs.append([conf.item()])
-
-                xywhs = torch.Tensor(xywh_bboxs)
-                confss = torch.Tensor(confs)
-
-                # pass detections to deepsort
-                outputs = deepsort.update(xywhs, confss, im0)
-
-                # draw boxes for visualization
-                if len(outputs) > 0:
-                    bbox_xyxy = outputs[:, :4]
-                    identities = outputs[:, -1]
-                    draw_boxes(im0, bbox_xyxy, identities)
-                    # to MOT format
-                    tlwh_bboxs = xyxy_to_tlwh(bbox_xyxy)
-
-                    # Write MOT compliant results to file
-                    if save_txt:
-                        for j, (tlwh_bbox, output) in enumerate(zip(tlwh_bboxs, outputs)):
-                            bbox_top = tlwh_bbox[0]
-                            bbox_left = tlwh_bbox[1]
-                            bbox_w = tlwh_bbox[2]
-                            bbox_h = tlwh_bbox[3]
-                            identity = output[-1]
-                            with open(txt_path, 'a') as f:
-                                f.write(('%g ' * 10 + '\n') % (frame_idx, identity, bbox_top,
-                                                            bbox_left, bbox_w, bbox_h, -1, -1, -1, -1))  # label format
-
-            else:
-                deepsort.increment_ages()
-
-            # Print time (inference + NMS)
-            print('%sDone. (%.3fs)' % (s, t2 - t1))
-            t_track = time_synchronized()
-            cycle_time_infer = t_infer-t_start
-            cycle_time_nms = t_nms-t_infer
-            cycle_time_track = t_track-t_nms
-            total_time_infer += cycle_time_infer
-            total_time_nms += cycle_time_nms
-            total_time_track += cycle_time_track
-
-            # Stream results
-            if show_vid:
-                cv2.imshow(p, im0)
-                if cv2.waitKey(1) == ord('q'):  # q to quit
-                    raise StopIteration
-
-            # Save results (image with detections)
-            if save_vid:
-                if vid_path != save_path:  # new video
-                    vid_path = save_path
-                    if isinstance(vid_writer, cv2.VideoWriter):
-                        vid_writer.release()  # release previous video writer
-                    if vid_cap:  # video
-                        fps = vid_cap.get(cv2.CAP_PROP_FPS)
-                        w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                        h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    else:  # stream
-                        fps, w, h = 30, im0.shape[1], im0.shape[0]
-                        save_path += '.mp4'
-
-                    vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-                vid_writer.write(im0)
+        pred, t1, t2, img = yolov5_pred(model, img, half, device, opt)
+        pred_rec = yolov5_pred_realsize(pred, img, im0s)
+        deep_sort_track_part2(deepsort, pred, pred_rec, path, im0s, vid_cap, webcam, out, show_vid, save_vid, names, t1, t2, vid_path, vid_writer, save_txt, txt_path, frame_idx)
 
     if save_txt or save_vid:
         print('Results saved to %s' % os.getcwd() + os.sep + out)
         if platform == 'darwin':  # MacOS
             os.system('open ' + save_path)
 
-    total_time = time.time() - t0
-    print('Done. (%.3fs, %.1f FPS)' % (total_time, total_frames / total_time))
-    print('\tInferring. (%.3fs, %.1f FPS)' % (total_time_infer+total_time_nms, total_frames / (total_time_infer+total_time_nms)))
-    print('\t\tInfer. (%.3fs, %.1f FPS)' % (total_time_infer, total_frames / total_time_infer))
-    print('\t\tNMS. (%.3fs, %.1f FPS)' % (total_time_nms, total_frames / total_time_nms))
-    print('\tTracking. (%.3fs, %.1f FPS)' % (total_time_track, total_frames / total_time_track))
-    print('\t\tReID. (%.3fs, %.1f FPS)' % (deepsort.total_time_reid, total_frames / deepsort.total_time_reid))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
